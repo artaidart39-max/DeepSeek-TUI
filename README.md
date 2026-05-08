@@ -441,6 +441,11 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
+Special thanks to our whale brothers 🐋:
+
+- **[DeepSeek](https://github.com/deepseek-ai)** — for the models that power every turn
+- **[DataWhale](https://github.com/datawhalechina)** — for their support and the open-source AI education community they've built
+
 This project ships with help from a growing community of contributors:
 
 - **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 PRs spanning features, fixes, and VS Code extension scaffolding (#645–#681)
