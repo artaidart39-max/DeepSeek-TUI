@@ -441,8 +441,8 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
-- **[DeepSeek](https://github.com/deepseek-ai)** — for the models that power every turn
-- **[DataWhale](https://github.com/datawhalechina)** 🐋 — for their support and the open-source AI education community they've built
+- **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
+- **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
 
 This project ships with help from a growing community of contributors:
 
