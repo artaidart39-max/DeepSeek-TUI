@@ -2655,35 +2655,41 @@ impl RuntimeThreadManager {
                             if remember {
                                 self.remember_thread_auto_approve(&thread_id).await;
                             }
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": id,
-                                    "decision": "allow",
-                                    "remember": remember,
-                                }),
-                            )
-                            .await
-                            .ok();
+                            if let Err(err) = self
+                                .emit_event(
+                                    &thread_id,
+                                    Some(&turn_id),
+                                    None,
+                                    "approval.decided",
+                                    json!({
+                                        "approval_id": id,
+                                        "decision": "allow",
+                                        "remember": remember,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::debug!(target: "runtime", ?err, "failed to emit approval allow event");
+                            }
                             let _ = engine.approve_tool_call(id).await;
                         }
                         Ok(Ok(ExternalApprovalDecision::Deny { remember })) => {
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": id,
-                                    "decision": "deny",
-                                    "remember": remember,
-                                }),
-                            )
-                            .await
-                            .ok();
+                            if let Err(err) = self
+                                .emit_event(
+                                    &thread_id,
+                                    Some(&turn_id),
+                                    None,
+                                    "approval.decided",
+                                    json!({
+                                        "approval_id": id,
+                                        "decision": "deny",
+                                        "remember": remember,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::debug!(target: "runtime", ?err, "failed to emit approval deny event");
+                            }
                             let _ = engine.deny_tool_call(id).await;
                         }
                         Ok(Err(_recv_err)) => {
@@ -2692,18 +2698,21 @@ impl RuntimeThreadManager {
                         }
                         Err(_timeout) => {
                             self.cancel_pending_approval(&id);
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.timeout",
-                                json!({
-                                    "approval_id": id,
-                                    "timeout_secs": APPROVAL_DECISION_TIMEOUT.as_secs(),
-                                }),
-                            )
-                            .await
-                            .ok();
+                            if let Err(err) = self
+                                .emit_event(
+                                    &thread_id,
+                                    Some(&turn_id),
+                                    None,
+                                    "approval.timeout",
+                                    json!({
+                                        "approval_id": id,
+                                        "timeout_secs": APPROVAL_DECISION_TIMEOUT.as_secs(),
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::debug!(target: "runtime", ?err, "failed to emit approval timeout event");
+                            }
                             let _ = engine.deny_tool_call(id).await;
                         }
                     }

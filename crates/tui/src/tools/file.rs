@@ -233,7 +233,18 @@ impl ToolSpec for WriteFileTool {
         // to render an inline diff in the tool result.
         let existed_before = file_path.exists();
         let prior_contents = if existed_before {
-            fs::read_to_string(&file_path).unwrap_or_default()
+            match fs::read_to_string(&file_path) {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "file",
+                        ?err,
+                        path = %file_path.display(),
+                        "could not read prior contents for diff"
+                    );
+                    String::new()
+                }
+            }
         } else {
             String::new()
         };

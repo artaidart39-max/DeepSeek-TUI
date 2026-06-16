@@ -317,7 +317,10 @@ async fn reader_task(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<V
         let n = match stdout.read(&mut tmp).await {
             Ok(0) => return,
             Ok(n) => n,
-            Err(_) => return,
+            Err(err) => {
+                tracing::debug!(target: "lsp", ?err, "LSP stdout read error; shutting down reader");
+                return;
+            }
         };
         buf.extend_from_slice(&tmp[..n]);
         // Try to parse as many frames as we can from the accumulated buffer.
@@ -326,7 +329,13 @@ async fn reader_task(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<V
                 break; // need more bytes
             }
             let body = &buf[header_end..header_end + content_length];
-            let parsed = serde_json::from_slice::<Value>(body).ok();
+            let parsed = match serde_json::from_slice::<Value>(body) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    tracing::debug!(target: "lsp", ?err, "malformed LSP JSON frame; skipping");
+                    None
+                }
+            };
             // Drop the consumed bytes regardless of parse result so a bad frame
             // does not stall the loop.
             buf.drain(..header_end + content_length);

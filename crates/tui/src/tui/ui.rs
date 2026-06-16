@@ -389,9 +389,17 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // Spawn the persistence actor so checkpoint/session-save I/O stays off
     // the UI thread.  The actor serialises + writes to disk in a dedicated
     // task; the UI just `try_send`s a request and returns immediately.
-    if let Ok(persist_manager) = SessionManager::default_location() {
-        let handle = persistence_actor::spawn_persistence_actor(persist_manager);
-        persistence_actor::init_actor(handle);
+    match SessionManager::default_location() {
+        Ok(persist_manager) => {
+            let handle = persistence_actor::spawn_persistence_actor(persist_manager);
+            persistence_actor::init_actor(handle);
+        }
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "session persistence disabled: could not resolve session directory"
+            );
+        }
     }
 
     let result = run_event_loop(

@@ -955,7 +955,7 @@ impl SubAgentManager {
 
     fn persist_state_best_effort(&self) {
         if let Err(err) = self.persist_state() {
-            eprintln!("Failed to persist sub-agent state: {err}");
+            tracing::warn!(target: "subagent", ?err, "failed to persist sub-agent state");
         }
     }
 
@@ -1538,7 +1538,7 @@ pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> Sha
     let state_path = default_state_path(&workspace);
     let mut manager = SubAgentManager::new(workspace, max_agents).with_state_path(state_path);
     if let Err(err) = manager.load_state() {
-        eprintln!("Failed to load sub-agent state: {err}");
+        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state");
     }
     Arc::new(RwLock::new(manager))
 }
