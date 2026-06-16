@@ -168,3 +168,199 @@ impl HookDispatcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn hook_event_response_start_serializes_with_type_tag() {
+        let event = HookEvent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        };
+        let json = event.to_json();
+        assert_eq!(json["type"], "response_start");
+        assert_eq!(json["response_id"], "resp-1");
+    }
+
+    #[test]
+    fn hook_event_response_delta_round_trips() {
+        let event = HookEvent::ResponseDelta {
+            response_id: "resp-2".to_string(),
+            delta: "hello world".to_string(),
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: HookEvent = serde_json::from_str(&serialized).unwrap();
+        match deserialized {
+            HookEvent::ResponseDelta { response_id, delta } => {
+                assert_eq!(response_id, "resp-2");
+                assert_eq!(delta, "hello world");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_event_tool_lifecycle_includes_payload() {
+        let event = HookEvent::ToolLifecycle {
+            response_id: "resp-3".to_string(),
+            tool_name: "read_file".to_string(),
+            phase: "started".to_string(),
+            payload: json!({"path": "/tmp/foo.txt"}),
+        };
+        let json = event.to_json();
+        assert_eq!(json["type"], "tool_lifecycle");
+        assert_eq!(json["tool_name"], "read_file");
+        assert_eq!(json["phase"], "started");
+        assert_eq!(json["payload"]["path"], "/tmp/foo.txt");
+    }
+
+    #[test]
+    fn hook_event_job_lifecycle_optional_fields() {
+        let event = HookEvent::JobLifecycle {
+            job_id: "job-1".to_string(),
+            phase: "completed".to_string(),
+            progress: Some(100),
+            detail: None,
+        };
+        let json = event.to_json();
+        assert_eq!(json["type"], "job_lifecycle");
+        assert_eq!(json["progress"], 100);
+        assert!(json["detail"].is_null());
+    }
+
+    #[test]
+    fn hook_event_approval_lifecycle_with_reason() {
+        let event = HookEvent::ApprovalLifecycle {
+            approval_id: "approval-1".to_string(),
+            phase: "denied".to_string(),
+            reason: Some("dangerous command".to_string()),
+        };
+        let json = event.to_json();
+        assert_eq!(json["type"], "approval_lifecycle");
+        assert_eq!(json["reason"], "dangerous command");
+    }
+
+    #[test]
+    fn hook_event_generic_event_frame_wraps_frame() {
+        let frame = EventFrame::TurnComplete {
+            turn_id: "turn-42".to_string(),
+        };
+        let event = HookEvent::GenericEventFrame {
+            frame: frame.clone(),
+        };
+        let json = event.to_json();
+        assert_eq!(json["type"], "generic_event_frame");
+        assert!(json["frame"].is_object());
+    }
+
+    #[test]
+    fn hook_event_response_end_round_trips() {
+        let event = HookEvent::ResponseEnd {
+            response_id: "resp-end".to_string(),
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: HookEvent = serde_json::from_str(&serialized).unwrap();
+        match deserialized {
+            HookEvent::ResponseEnd { response_id } => {
+                assert_eq!(response_id, "resp-end");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    struct CollectorSink {
+        events: Mutex<Vec<Value>>,
+    }
+
+    impl CollectorSink {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl HookSink for CollectorSink {
+        async fn emit(&self, event: &HookEvent) -> Result<()> {
+            self.events.lock().unwrap().push(event.to_json());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_emits_to_all_sinks() {
+        let sink_a = Arc::new(CollectorSink::new());
+        let sink_b = Arc::new(CollectorSink::new());
+        let mut dispatcher = HookDispatcher::default();
+        dispatcher.add_sink(sink_a.clone());
+        dispatcher.add_sink(sink_b.clone());
+
+        dispatcher
+            .emit(HookEvent::ResponseStart {
+                response_id: "r1".to_string(),
+            })
+            .await;
+
+        assert_eq!(sink_a.events.lock().unwrap().len(), 1);
+        assert_eq!(sink_b.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_with_no_sinks_does_not_panic() {
+        let dispatcher = HookDispatcher::default();
+        dispatcher
+            .emit(HookEvent::ResponseEnd {
+                response_id: "r2".to_string(),
+            })
+            .await;
+    }
+
+    struct FailingSink;
+
+    #[async_trait]
+    impl HookSink for FailingSink {
+        async fn emit(&self, _event: &HookEvent) -> Result<()> {
+            anyhow::bail!("sink failure")
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_continues_after_sink_failure() {
+        let good_sink = Arc::new(CollectorSink::new());
+        let mut dispatcher = HookDispatcher::default();
+        dispatcher.add_sink(Arc::new(FailingSink));
+        dispatcher.add_sink(good_sink.clone());
+
+        dispatcher
+            .emit(HookEvent::ResponseStart {
+                response_id: "r3".to_string(),
+            })
+            .await;
+
+        assert_eq!(good_sink.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn jsonl_sink_writes_to_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "deepseek_hooks_test_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let log_path = dir.join("hooks.jsonl");
+        let sink = JsonlHookSink::new(log_path.clone());
+
+        sink.emit(&HookEvent::ResponseStart {
+            response_id: "file-test".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let contents = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(contents.contains("file-test"));
+        assert!(contents.contains("response_start"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+}
