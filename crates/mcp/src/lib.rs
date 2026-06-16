@@ -891,3 +891,405 @@ impl JsonRpcError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_config(name: &str, enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            command: "echo".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            enabled,
+        }
+    }
+
+    // --- InMemoryMcpClient ---
+
+    #[test]
+    fn in_memory_client_lists_tools() {
+        let client = InMemoryMcpClient::default()
+            .with_tool("ping", json!({"pong": true}))
+            .with_tool("echo", json!({"ok": true}));
+        let tools = client.list_tools().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().all(|t| t.server_name == "in-memory"));
+    }
+
+    #[test]
+    fn in_memory_client_calls_existing_tool() {
+        let client = InMemoryMcpClient::default().with_tool("ping", json!({"pong": true}));
+        let result = client.call_tool("ping", json!({})).unwrap();
+        assert_eq!(result, json!({"pong": true}));
+    }
+
+    #[test]
+    fn in_memory_client_call_missing_tool_returns_error() {
+        let client = InMemoryMcpClient::default();
+        let err = client.call_tool("nonexistent", json!({})).unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn in_memory_client_lists_resources() {
+        let client = InMemoryMcpClient::default()
+            .with_resource("mcp://test/health", json!({"status": "ok"}));
+        let resources = client.list_resources().unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].uri, "mcp://test/health");
+    }
+
+    #[test]
+    fn in_memory_client_reads_resource() {
+        let client =
+            InMemoryMcpClient::default().with_resource("mcp://test/status", json!({"up": true}));
+        let val = client.read_resource("mcp://test/status").unwrap();
+        assert_eq!(val, json!({"up": true}));
+    }
+
+    #[test]
+    fn in_memory_client_read_missing_resource_returns_error() {
+        let client = InMemoryMcpClient::default();
+        let err = client.read_resource("mcp://test/missing").unwrap_err();
+        assert!(err.to_string().contains("missing"));
+    }
+
+    // --- ToolFilter ---
+
+    #[test]
+    fn filter_allow_empty_permits_all() {
+        let filter = ToolFilter {
+            allow: vec![],
+            deny: vec![],
+        };
+        assert!(allowed_by_filter("anything", &filter));
+    }
+
+    #[test]
+    fn filter_deny_blocks_exact_match() {
+        let filter = ToolFilter {
+            allow: vec![],
+            deny: vec!["blocked".to_string()],
+        };
+        assert!(!allowed_by_filter("blocked", &filter));
+        assert!(allowed_by_filter("allowed", &filter));
+    }
+
+    #[test]
+    fn filter_allow_restricts_to_listed() {
+        let filter = ToolFilter {
+            allow: vec!["ping".to_string()],
+            deny: vec![],
+        };
+        assert!(allowed_by_filter("ping", &filter));
+        assert!(!allowed_by_filter("other", &filter));
+    }
+
+    #[test]
+    fn filter_deny_takes_precedence_over_allow() {
+        let filter = ToolFilter {
+            allow: vec!["ping".to_string()],
+            deny: vec!["ping".to_string()],
+        };
+        assert!(!allowed_by_filter("ping", &filter));
+    }
+
+    // --- qualify / parse tool names ---
+
+    #[test]
+    fn qualify_tool_name_basic() {
+        let name = qualify_tool_name("my-server", "read_file");
+        assert_eq!(name, "mcp__my_server__read_file");
+    }
+
+    #[test]
+    fn qualify_tool_name_sanitizes_special_chars() {
+        let name = qualify_tool_name("Server.One!", "tool@2");
+        assert!(name.starts_with("mcp__"));
+        assert!(!name.contains('.'));
+        assert!(!name.contains('!'));
+        assert!(!name.contains('@'));
+    }
+
+    #[test]
+    fn qualify_tool_name_truncates_long_names() {
+        let long_server = "a".repeat(40);
+        let long_tool = "b".repeat(40);
+        let name = qualify_tool_name(&long_server, &long_tool);
+        assert!(name.len() <= 64, "qualified name too long: {}", name.len());
+    }
+
+    #[test]
+    fn parse_qualified_tool_name_round_trips() {
+        let qualified = qualify_tool_name("myserver", "mytool");
+        let (server, tool) = parse_qualified_tool_name(&qualified).unwrap();
+        assert_eq!(server, "myserver");
+        assert_eq!(tool, "mytool");
+    }
+
+    #[test]
+    fn parse_qualified_tool_name_rejects_missing_prefix() {
+        assert!(parse_qualified_tool_name("no_prefix__server__tool").is_err());
+    }
+
+    #[test]
+    fn parse_qualified_tool_name_rejects_missing_segments() {
+        assert!(parse_qualified_tool_name("mcp__").is_err());
+        assert!(parse_qualified_tool_name("mcp__server").is_err());
+    }
+
+    // --- sanitize_component ---
+
+    #[test]
+    fn sanitize_component_lowercases_and_replaces() {
+        assert_eq!(sanitize_component("Hello-World"), "hello_world");
+        assert_eq!(sanitize_component("foo_bar"), "foo_bar");
+        assert_eq!(sanitize_component("A.B!C"), "a_b_c");
+    }
+
+    // --- parse_server_from_uri ---
+
+    #[test]
+    fn parse_server_from_uri_extracts_server() {
+        assert_eq!(
+            parse_server_from_uri("mcp://myserver/health"),
+            Some("myserver".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_server_from_uri_returns_none_for_invalid() {
+        assert!(parse_server_from_uri("http://notmcp/path").is_none());
+        assert!(parse_server_from_uri("mcp:///no-server").is_none());
+    }
+
+    // --- McpManager ---
+
+    #[test]
+    fn manager_register_and_list_tools() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default().with_tool("greet", json!({"hi": true}));
+        manager.register_server(
+            sample_config("test-srv", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        let tools = manager.list_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool_name, "greet");
+        assert!(tools[0].qualified_name.starts_with("mcp__"));
+    }
+
+    #[test]
+    fn manager_call_tool_directly() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default().with_tool("echo", json!({"echoed": true}));
+        manager.register_server(
+            sample_config("srv", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        let result = manager.call_tool("srv", "echo", json!({})).unwrap();
+        assert_eq!(result, json!({"echoed": true}));
+    }
+
+    #[test]
+    fn manager_call_qualified_tool() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default().with_tool("greet", json!({"hello": true}));
+        manager.register_server(
+            sample_config("demo", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        let result = manager
+            .call_qualified_tool("mcp__demo__greet", json!({}))
+            .unwrap();
+        assert_eq!(result, json!({"hello": true}));
+    }
+
+    #[test]
+    fn manager_call_tool_missing_server_errors() {
+        let manager = McpManager::default();
+        assert!(manager.call_tool("ghost", "ping", json!({})).is_err());
+    }
+
+    #[test]
+    fn manager_stop_server_removes_client() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default().with_tool("a", json!(null));
+        manager.register_server(
+            sample_config("s1", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        manager.stop_server("s1").unwrap();
+        assert!(manager.call_tool("s1", "a", json!({})).is_err());
+    }
+
+    #[test]
+    fn manager_stop_nonexistent_server_errors() {
+        let mut manager = McpManager::default();
+        assert!(manager.stop_server("nope").is_err());
+    }
+
+    #[test]
+    fn manager_unregister_server_removes_config_and_client() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default();
+        manager.register_server(
+            sample_config("s2", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        manager.unregister_server("s2").unwrap();
+        assert!(manager.list_tools().unwrap().is_empty());
+    }
+
+    #[test]
+    fn manager_unregister_nonexistent_server_errors() {
+        let mut manager = McpManager::default();
+        assert!(manager.unregister_server("missing").is_err());
+    }
+
+    #[test]
+    fn manager_list_and_read_resources() {
+        let mut manager = McpManager::default();
+        let client =
+            InMemoryMcpClient::default().with_resource("mcp://res/data", json!({"key": "value"}));
+        manager.register_server(
+            sample_config("res-srv", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        let resources = manager.list_resources().unwrap();
+        assert_eq!(resources.len(), 1);
+
+        let value = manager.read_resource("res-srv", "mcp://res/data").unwrap();
+        assert_eq!(value["key"], "value");
+    }
+
+    #[test]
+    fn manager_read_resource_missing_server_errors() {
+        let manager = McpManager::default();
+        assert!(manager.read_resource("noserver", "mcp://x").is_err());
+    }
+
+    #[test]
+    fn manager_start_all_reports_ready_failed_cancelled() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default();
+        manager.register_server(
+            sample_config("enabled", true),
+            ToolFilter::default(),
+            Box::new(client),
+        );
+        // Add a disabled config (no client)
+        manager.configs.insert(
+            "disabled".to_string(),
+            (sample_config("disabled", false), ToolFilter::default()),
+        );
+
+        let mut events = Vec::new();
+        let result = manager.start_all(|evt| events.push(evt));
+
+        assert!(result.ready.contains(&"enabled".to_string()));
+        assert!(result.cancelled.contains(&"disabled".to_string()));
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn manager_update_sandbox_state_produces_notices() {
+        let mut manager = McpManager::default();
+        manager.configs.insert(
+            "s".to_string(),
+            (sample_config("s", true), ToolFilter::default()),
+        );
+        let notices = manager.update_sandbox_state("strict", "/tmp").unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0]["method"], "codex/sandbox-state/update");
+    }
+
+    #[test]
+    fn manager_tool_filter_applied_on_list() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default()
+            .with_tool("allowed_tool", json!(null))
+            .with_tool("blocked_tool", json!(null));
+        let filter = ToolFilter {
+            allow: vec![],
+            deny: vec!["blocked_tool".to_string()],
+        };
+        manager.register_server(sample_config("filtered", true), filter, Box::new(client));
+        let tools = manager.list_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool_name, "allowed_tool");
+    }
+
+    // --- McpServerConfig / serde ---
+
+    #[test]
+    fn mcp_server_config_round_trips() {
+        let config = McpServerConfig {
+            name: "test".to_string(),
+            command: "node".to_string(),
+            args: vec!["server.js".to_string()],
+            env: HashMap::from([("PORT".to_string(), "3000".to_string())]),
+            enabled: true,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "test");
+        assert!(parsed.enabled);
+        assert_eq!(parsed.env.get("PORT").unwrap(), "3000");
+    }
+
+    #[test]
+    fn mcp_startup_status_serde() {
+        let ready = McpStartupStatus::Ready;
+        let json = serde_json::to_string(&ready).unwrap();
+        assert!(json.contains("ready"));
+
+        let failed = McpStartupStatus::Failed {
+            error: "timeout".to_string(),
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        assert!(json.contains("timeout"));
+    }
+
+    // --- JsonRpcError codes ---
+
+    #[test]
+    fn jsonrpc_error_codes() {
+        assert_eq!(JsonRpcError::parse_error("x").code, -32700);
+        assert_eq!(JsonRpcError::invalid_request("x").code, -32600);
+        assert_eq!(JsonRpcError::method_not_found("m").code, -32601);
+        assert_eq!(JsonRpcError::invalid_params("x").code, -32602);
+        assert_eq!(JsonRpcError::internal("x").code, -32603);
+    }
+
+    #[test]
+    fn jsonrpc_result_structure() {
+        let result = jsonrpc_result(Some(json!(1)), json!({"ok": true}));
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], 1);
+        assert_eq!(result["result"]["ok"], true);
+    }
+
+    #[test]
+    fn jsonrpc_error_structure() {
+        let err = jsonrpc_error(Some(json!(2)), JsonRpcError::internal("fail"));
+        assert_eq!(err["jsonrpc"], "2.0");
+        assert_eq!(err["id"], 2);
+        assert_eq!(err["error"]["code"], -32603);
+        assert_eq!(err["error"]["message"], "fail");
+    }
+
+    #[test]
+    fn jsonrpc_null_id_when_missing() {
+        let result = jsonrpc_result(None, json!({}));
+        assert!(result["id"].is_null());
+    }
+}

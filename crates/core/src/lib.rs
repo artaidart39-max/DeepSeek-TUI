@@ -1700,3 +1700,458 @@ fn job_state_status_to_runtime(status: JobStateStatus) -> JobStatus {
         JobStateStatus::Cancelled => JobStatus::Cancelled,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- JobManager ---
+
+    #[test]
+    fn enqueue_creates_queued_job_with_history() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("build");
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(job.name, "build");
+        assert_eq!(job.progress, Some(0));
+        assert!(!job.history.is_empty());
+        assert_eq!(job.history[0].phase, "created");
+    }
+
+    #[test]
+    fn set_running_transitions_from_queued() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("test");
+        mgr.set_running(&job.id);
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Running);
+        assert!(jobs[0].history.iter().any(|h| h.phase == "running"));
+    }
+
+    #[test]
+    fn update_progress_records_detail() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("task");
+        mgr.set_running(&job.id);
+        mgr.update_progress(&job.id, 50, Some("halfway".to_string()));
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].progress, Some(50));
+        assert_eq!(jobs[0].detail.as_deref(), Some("halfway"));
+    }
+
+    #[test]
+    fn update_progress_caps_at_100() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("capped");
+        mgr.update_progress(&job.id, 200, None);
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].progress, Some(100));
+    }
+
+    #[test]
+    fn complete_sets_progress_to_100() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("finish");
+        mgr.set_running(&job.id);
+        mgr.complete(&job.id);
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Completed);
+        assert_eq!(jobs[0].progress, Some(100));
+    }
+
+    #[test]
+    fn fail_increments_retry_attempt() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("retry-test");
+        mgr.set_running(&job.id);
+        mgr.fail(&job.id, "error 1");
+
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Failed);
+        assert_eq!(jobs[0].retry.attempt, 1);
+        assert!(jobs[0].retry.next_backoff_ms > 0);
+        assert!(jobs[0].retry.next_retry_at.is_some());
+    }
+
+    #[test]
+    fn fail_clears_retry_when_max_attempts_exhausted() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("max-retry");
+        // Exhaust all retry attempts
+        for i in 0..DEFAULT_JOB_MAX_ATTEMPTS {
+            mgr.set_running(&job.id);
+            mgr.fail(&job.id, format!("error {i}"));
+        }
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].retry.attempt, DEFAULT_JOB_MAX_ATTEMPTS);
+        // After reaching max, the last fail still set a retry; one more fail triggers the else branch
+        mgr.fail(&job.id, "final failure");
+        let jobs = mgr.list();
+        assert!(jobs[0].retry.next_retry_at.is_none());
+    }
+
+    #[test]
+    fn cancel_sets_status_and_clears_retry() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("cancel-test");
+        mgr.set_running(&job.id);
+        mgr.cancel(&job.id);
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Cancelled);
+        assert!(jobs[0].retry.next_retry_at.is_none());
+    }
+
+    #[test]
+    fn pause_and_resume() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("pausable");
+        mgr.set_running(&job.id);
+        mgr.pause(&job.id, Some("waiting for input".to_string()));
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Paused);
+        assert_eq!(jobs[0].detail.as_deref(), Some("waiting for input"));
+
+        mgr.resume(&job.id, Some("resumed".to_string()));
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].status, JobStatus::Running);
+        assert_eq!(jobs[0].detail.as_deref(), Some("resumed"));
+    }
+
+    #[test]
+    fn resume_without_detail_keeps_old_detail() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("keep-detail");
+        mgr.update_progress(&job.id, 10, Some("original".to_string()));
+        mgr.pause(&job.id, None);
+        mgr.resume(&job.id, None);
+        let jobs = mgr.list();
+        assert_eq!(jobs[0].detail.as_deref(), Some("original"));
+    }
+
+    #[test]
+    fn list_returns_all_jobs() {
+        let mut mgr = JobManager::default();
+        mgr.enqueue("first");
+        mgr.enqueue("second");
+        mgr.enqueue("third");
+        let jobs = mgr.list();
+        assert_eq!(jobs.len(), 3);
+    }
+
+    #[test]
+    fn history_returns_entries_for_job() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("history-test");
+        mgr.set_running(&job.id);
+        mgr.complete(&job.id);
+        let history = mgr.history(&job.id);
+        assert_eq!(history.len(), 3); // created, running, completed
+        assert_eq!(history[0].phase, "created");
+        assert_eq!(history[1].phase, "running");
+        assert_eq!(history[2].phase, "completed");
+    }
+
+    #[test]
+    fn history_returns_empty_for_nonexistent() {
+        let mgr = JobManager::default();
+        assert!(mgr.history("no-such-job").is_empty());
+    }
+
+    #[test]
+    fn history_truncates_at_max() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("history-overflow");
+        for _ in 0..MAX_JOB_HISTORY_ENTRIES + 10 {
+            mgr.update_progress(&job.id, 50, None);
+        }
+        let history = mgr.history(&job.id);
+        assert!(
+            history.len() <= MAX_JOB_HISTORY_ENTRIES,
+            "history should be capped at {MAX_JOB_HISTORY_ENTRIES}, got {}",
+            history.len()
+        );
+    }
+
+    #[test]
+    fn resume_pending_requeues_running_and_queued_jobs() {
+        let mut mgr = JobManager::default();
+        let j1 = mgr.enqueue("q1");
+        let j2 = mgr.enqueue("q2");
+        mgr.set_running(&j1.id);
+        let j3 = mgr.enqueue("q3");
+        mgr.complete(&j3.id);
+
+        let resumed = mgr.resume_pending();
+        let resumed_ids: Vec<_> = resumed.iter().map(|j| j.id.clone()).collect();
+        assert!(resumed_ids.contains(&j1.id));
+        assert!(resumed_ids.contains(&j2.id));
+        assert!(!resumed_ids.contains(&j3.id));
+
+        for job in &resumed {
+            assert_eq!(job.status, JobStatus::Queued);
+        }
+    }
+
+    #[test]
+    fn operations_on_nonexistent_job_do_not_panic() {
+        let mut mgr = JobManager::default();
+        mgr.set_running("nope");
+        mgr.update_progress("nope", 50, None);
+        mgr.complete("nope");
+        mgr.fail("nope", "error");
+        mgr.cancel("nope");
+        mgr.pause("nope", None);
+        mgr.resume("nope", None);
+    }
+
+    // --- deterministic_backoff_ms ---
+
+    #[test]
+    fn backoff_zero_for_first_attempt() {
+        let retry = JobRetryMetadata {
+            attempt: 0,
+            backoff_base_ms: 500,
+            ..Default::default()
+        };
+        assert_eq!(JobManager::deterministic_backoff_ms(&retry), 0);
+    }
+
+    #[test]
+    fn backoff_is_exponential() {
+        let mut retry = JobRetryMetadata {
+            attempt: 1,
+            backoff_base_ms: 500,
+            ..Default::default()
+        };
+        let b1 = JobManager::deterministic_backoff_ms(&retry);
+        retry.attempt = 2;
+        let b2 = JobManager::deterministic_backoff_ms(&retry);
+        retry.attempt = 3;
+        let b3 = JobManager::deterministic_backoff_ms(&retry);
+        assert_eq!(b1, 500);
+        assert_eq!(b2, 1000);
+        assert_eq!(b3, 2000);
+    }
+
+    #[test]
+    fn backoff_does_not_overflow_on_large_attempt() {
+        let retry = JobRetryMetadata {
+            attempt: 100,
+            backoff_base_ms: 500,
+            ..Default::default()
+        };
+        let _ = JobManager::deterministic_backoff_ms(&retry);
+    }
+
+    // --- Helper functions ---
+
+    #[test]
+    fn job_status_to_str_covers_all_variants() {
+        let cases = [
+            (JobStatus::Queued, "queued"),
+            (JobStatus::Running, "running"),
+            (JobStatus::Paused, "paused"),
+            (JobStatus::Completed, "completed"),
+            (JobStatus::Failed, "failed"),
+            (JobStatus::Cancelled, "cancelled"),
+        ];
+        for (status, expected) in &cases {
+            assert_eq!(job_status_to_str(*status), *expected);
+        }
+    }
+
+    #[test]
+    fn job_status_from_str_round_trips() {
+        for label in [
+            "queued",
+            "running",
+            "paused",
+            "completed",
+            "failed",
+            "cancelled",
+        ] {
+            let status = job_status_from_str(label).unwrap();
+            assert_eq!(job_status_to_str(status), label);
+        }
+    }
+
+    #[test]
+    fn job_status_from_str_returns_none_for_unknown() {
+        assert!(job_status_from_str("unknown").is_none());
+    }
+
+    #[test]
+    fn runtime_status_to_job_state_covers_all() {
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Queued),
+            JobStateStatus::Queued
+        );
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Running),
+            JobStateStatus::Running
+        );
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Paused),
+            JobStateStatus::Running
+        );
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Completed),
+            JobStateStatus::Completed
+        );
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Failed),
+            JobStateStatus::Failed
+        );
+        assert_eq!(
+            runtime_status_to_job_state(JobStatus::Cancelled),
+            JobStateStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn job_state_status_to_runtime_covers_all() {
+        assert_eq!(
+            job_state_status_to_runtime(JobStateStatus::Queued),
+            JobStatus::Queued
+        );
+        assert_eq!(
+            job_state_status_to_runtime(JobStateStatus::Running),
+            JobStatus::Running
+        );
+        assert_eq!(
+            job_state_status_to_runtime(JobStateStatus::Completed),
+            JobStatus::Completed
+        );
+        assert_eq!(
+            job_state_status_to_runtime(JobStateStatus::Failed),
+            JobStatus::Failed
+        );
+        assert_eq!(
+            job_state_status_to_runtime(JobStateStatus::Cancelled),
+            JobStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn truncate_preview_limits_length() {
+        let short = "hello";
+        assert_eq!(truncate_preview(short), "hello");
+
+        let long = "x".repeat(200);
+        assert_eq!(truncate_preview(&long).len(), 120);
+    }
+
+    #[test]
+    fn preview_from_initial_history_new() {
+        let preview = preview_from_initial_history(&InitialHistory::New);
+        assert_eq!(preview, "New conversation");
+    }
+
+    #[test]
+    fn preview_from_initial_history_forked() {
+        let items = vec![json!({"type": "fork"})];
+        let preview = preview_from_initial_history(&InitialHistory::Forked(items));
+        assert!(!preview.is_empty());
+    }
+
+    #[test]
+    fn json_optional_string_returns_none_for_null() {
+        assert!(json_optional_string(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn json_optional_string_returns_some_for_string() {
+        let val = json!("hello");
+        assert_eq!(json_optional_string(&val), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn parse_retry_metadata_from_none() {
+        let retry = parse_retry_metadata(None);
+        assert_eq!(retry.attempt, 0);
+        assert_eq!(retry.max_attempts, DEFAULT_JOB_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn parse_retry_metadata_round_trip() {
+        let retry = JobRetryMetadata {
+            attempt: 2,
+            max_attempts: 5,
+            backoff_base_ms: 1000,
+            next_backoff_ms: 2000,
+            next_retry_at: Some(999),
+        };
+        let value = job_retry_to_value(&retry);
+        let parsed = parse_retry_metadata(Some(&value));
+        assert_eq!(parsed.attempt, 2);
+        assert_eq!(parsed.max_attempts, 5);
+        assert_eq!(parsed.backoff_base_ms, 1000);
+        assert_eq!(parsed.next_backoff_ms, 2000);
+        assert_eq!(parsed.next_retry_at, Some(999));
+    }
+
+    #[test]
+    fn parse_history_entry_from_json() {
+        let value = json!({
+            "at": 123456,
+            "phase": "running",
+            "status": "running",
+            "progress": 50,
+            "detail": "in progress"
+        });
+        let entry = parse_history_entry(&value).unwrap();
+        assert_eq!(entry.at, 123456);
+        assert_eq!(entry.phase, "running");
+        assert_eq!(entry.status, JobStatus::Running);
+        assert_eq!(entry.progress, Some(50));
+        assert_eq!(entry.detail.as_deref(), Some("in progress"));
+    }
+
+    #[test]
+    fn parse_history_entry_returns_none_for_invalid_status() {
+        let value = json!({"at": 0, "phase": "x", "status": "invalid_status"});
+        assert!(parse_history_entry(&value).is_none());
+    }
+
+    #[test]
+    fn job_retry_to_value_round_trip() {
+        let retry = JobRetryMetadata::default();
+        let value = job_retry_to_value(&retry);
+        assert_eq!(value["attempt"], 0);
+        assert_eq!(value["max_attempts"], DEFAULT_JOB_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn job_history_to_value_contains_all_fields() {
+        let entry = JobHistoryEntry {
+            at: 1000,
+            phase: "completed".to_string(),
+            status: JobStatus::Completed,
+            progress: Some(100),
+            detail: Some("done".to_string()),
+            retry: JobRetryMetadata::default(),
+        };
+        let value = job_history_to_value(&entry);
+        assert_eq!(value["at"], 1000);
+        assert_eq!(value["phase"], "completed");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["progress"], 100);
+        assert_eq!(value["detail"], "done");
+    }
+
+    #[test]
+    fn encode_and_parse_persisted_detail_round_trip() {
+        let mut mgr = JobManager::default();
+        let job = mgr.enqueue("persist-test");
+        mgr.set_running(&job.id);
+        mgr.update_progress(&job.id, 75, Some("building".to_string()));
+
+        let encoded = JobManager::encode_persisted_detail(&mgr.list()[0]).unwrap();
+        assert!(encoded.is_some());
+
+        let parsed = JobManager::parse_persisted_detail(encoded.as_deref()).unwrap();
+        assert_eq!(parsed.status, JobStatus::Running);
+        assert_eq!(parsed.detail.as_deref(), Some("building"));
+        assert!(!parsed.history.is_empty());
+    }
+}
