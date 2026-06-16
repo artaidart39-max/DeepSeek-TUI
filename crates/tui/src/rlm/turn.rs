@@ -15,6 +15,7 @@ use crate::repl::PythonRuntime;
 
 use super::bridge::{RlmBridge, RlmLlmClient};
 use super::prompt::rlm_system_prompt;
+use crate::utils::truncate_chars as truncate_text;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -756,17 +757,6 @@ fn strip_quotes(s: &str) -> String {
         return s[1..s.len() - 1].to_string();
     }
     s.to_string()
-}
-
-fn truncate_text(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
-        return text.to_string();
-    }
-    let take = max_chars.saturating_sub(3);
-    let mut result: String = text.chars().take(take).collect();
-    result.push_str("...");
-    result
 }
 
 // ---------------------------------------------------------------------------

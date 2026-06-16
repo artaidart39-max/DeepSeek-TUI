@@ -44,6 +44,7 @@ use crate::skills::SkillRegistry;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
 };
+use crate::utils::truncate_chars as truncate_text;
 
 #[derive(Clone)]
 pub struct RuntimeApiState {
@@ -1578,15 +1579,6 @@ fn map_compat_stream_event(event: &crate::runtime_threads::RuntimeEventRecord) -
 fn sse_json(event: &str, payload: serde_json::Value) -> SseEvent {
     let data = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
     SseEvent::default().event(event).data(data)
-}
-
-fn truncate_text(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-    let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
-    format!("{truncated}...")
 }
 
 fn collect_workspace_status(workspace: &std::path::Path) -> WorkspaceStatusResponse {

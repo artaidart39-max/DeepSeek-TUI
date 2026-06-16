@@ -13,6 +13,7 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, required_str, required_u64,
 };
+use crate::utils::{sanitize_filename, summarize_text as summarize};
 
 const DEFAULT_GH: &str = "/opt/homebrew/bin/gh";
 const FALLBACK_GH_PATHS: &[&str] = &[
@@ -539,37 +540,6 @@ fn validate_evidence(input: &Value, closing: bool) -> Result<(), ToolError> {
         }
     }
     Ok(())
-}
-
-fn summarize(text: &str, limit: usize) -> String {
-    let mut out = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx >= limit.saturating_sub(3) {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn sanitize_filename(input: &str) -> String {
-    let mut out = String::new();
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "artifact".to_string()
-    } else {
-        out
-    }
 }
 
 #[cfg(test)]

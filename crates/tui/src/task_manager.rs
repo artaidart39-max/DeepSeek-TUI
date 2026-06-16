@@ -27,7 +27,7 @@ use crate::runtime_threads::{
     CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
     SharedRuntimeThreadManager, StartTurnRequest,
 };
-use crate::utils::spawn_supervised;
+use crate::utils::{sanitize_filename, spawn_supervised, summarize_text};
 
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
@@ -1565,40 +1565,6 @@ fn resolve_task_id(tasks: &HashMap<String, TaskRecord>, id_or_prefix: &str) -> R
 fn summarize_json(value: &Value) -> Option<String> {
     let text = serde_json::to_string(value).ok()?;
     Some(summarize_text(&text, TIMELINE_SUMMARY_LIMIT))
-}
-
-fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
-}
-
-fn sanitize_filename(input: &str) -> String {
-    let mut out = String::new();
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "artifact".to_string()
-    } else {
-        out
-    }
 }
 
 fn duration_ms(start: DateTime<Utc>, end: DateTime<Utc>) -> u64 {

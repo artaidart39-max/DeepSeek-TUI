@@ -15,6 +15,7 @@ use crate::tools::review::ReviewOutput;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
 use crate::tui::markdown_render;
+use crate::utils::truncate_chars as truncate_text;
 
 // === Constants ===
 
@@ -2628,18 +2629,6 @@ fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
         ),
         Span::styled(text.to_string(), style),
     ])
-}
-
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.chars().count() <= max_len {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    for ch in text.chars().take(max_len.saturating_sub(3)) {
-        out.push(ch);
-    }
-    out.push_str("...");
-    out
 }
 
 fn user_label_style() -> Style {

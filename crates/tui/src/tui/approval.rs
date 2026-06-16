@@ -31,6 +31,7 @@ use crate::localization::Locale;
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
+use crate::utils::truncate_chars as truncate_string_value;
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -700,14 +701,6 @@ fn truncate_params_value(value: &Value, max_len: usize) -> Value {
             }
         }
     }
-}
-
-fn truncate_string_value(value: &str, max_len: usize) -> String {
-    if value.chars().count() <= max_len {
-        return value.to_string();
-    }
-    let truncated: String = value.chars().take(max_len).collect();
-    format!("{truncated}...")
 }
 
 // ============================================================================
