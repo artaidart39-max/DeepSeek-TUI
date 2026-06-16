@@ -500,7 +500,12 @@ impl Engine {
         };
 
         if McpPool::is_mcp_tool(&candidate.name) && mcp_pool.is_none() {
-            mcp_pool = self.ensure_mcp_pool().await.ok();
+            match self.ensure_mcp_pool().await {
+                Ok(pool) => mcp_pool = Some(pool),
+                Err(err) => {
+                    tracing::warn!(target: "mcp", ?err, "failed to initialise MCP pool for replay");
+                }
+            }
         }
 
         let supports_parallel = if McpPool::is_mcp_tool(&candidate.name) {

@@ -232,7 +232,14 @@ impl SnapshotRepo {
             // we're under the target, or until there's nothing left.
             let mut age = Duration::from_secs(1);
             for _ in 0..10 {
-                let _ = self.prune_older_than(age);
+                if let Err(err) = self.prune_older_than(age) {
+                    tracing::warn!(
+                        target: "snapshot",
+                        ?err,
+                        retention_secs = age.as_secs_f32(),
+                        "prune pass failed"
+                    );
+                }
                 if let Ok(new_size) = dir_size_mb(&self.git_dir)
                     && new_size <= PRUNE_TARGET_MB
                 {
@@ -255,8 +262,12 @@ impl SnapshotRepo {
                     target: "snapshot",
                     "snapshot storage still over limit after pruning; wiping history"
                 );
-                let _ = self.prune_older_than(Duration::ZERO);
-                let _ = self.prune_unreachable_objects();
+                if let Err(err) = self.prune_older_than(Duration::ZERO) {
+                    tracing::warn!(target: "snapshot", ?err, "final prune pass failed");
+                }
+                if let Err(err) = self.prune_unreachable_objects() {
+                    tracing::warn!(target: "snapshot", ?err, "unreachable object prune failed");
+                }
             }
         }
         // Stage every tracked + untracked path the workspace exposes.

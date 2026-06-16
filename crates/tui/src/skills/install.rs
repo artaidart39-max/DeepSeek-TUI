@@ -319,7 +319,14 @@ pub async fn install_with_registry(
         let backup = skills_dir.join(format!("{}.bak", staged.skill_name));
         // If a previous failed update left a stale `.bak/`, drop it.
         if backup.exists() {
-            fs::remove_dir_all(&backup).ok();
+            if let Err(err) = fs::remove_dir_all(&backup) {
+                tracing::warn!(
+                    target: "skills",
+                    ?err,
+                    path = %backup.display(),
+                    "failed to remove stale skill backup"
+                );
+            }
         }
         fs::rename(&final_path, &backup).with_context(|| {
             format!(
@@ -330,10 +337,18 @@ pub async fn install_with_registry(
         if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
             // Roll back: restore the backup so the user isn't left with an
             // empty skill directory.
-            fs::rename(&backup, &final_path).ok();
+            if let Err(rollback_err) = fs::rename(&backup, &final_path) {
+                tracing::warn!(
+                    target: "skills",
+                    ?rollback_err,
+                    "failed to restore skill backup during rollback"
+                );
+            }
             return Err(err).context("failed to install staged skill");
         }
-        fs::remove_dir_all(&backup).ok();
+        if let Err(err) = fs::remove_dir_all(&backup) {
+            tracing::debug!(target: "skills", ?err, "failed to clean up skill backup");
+        }
     } else {
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent).with_context(|| {

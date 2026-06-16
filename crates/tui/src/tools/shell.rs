@@ -364,12 +364,23 @@ impl BackgroundShell {
         let stdout_bytes = self
             .stdout_buffer
             .lock()
-            .map(|data| data.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!(target: "shell", "stdout buffer mutex poisoned; recovering");
+                poisoned.into_inner()
+            })
+            .clone();
         let stderr_bytes = self
             .stderr_buffer
             .as_ref()
-            .and_then(|buffer| buffer.lock().ok().map(|data| data.clone()))
+            .map(|buffer| {
+                buffer
+                    .lock()
+                    .unwrap_or_else(|poisoned| {
+                        tracing::warn!(target: "shell", "stderr buffer mutex poisoned; recovering");
+                        poisoned.into_inner()
+                    })
+                    .clone()
+            })
             .unwrap_or_default();
 
         let stdout_len = stdout_bytes.len();
@@ -788,14 +799,18 @@ impl ShellManager {
         let stdout_thread = std::thread::spawn(move || {
             let mut reader = stdout_handle;
             let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
+            if let Err(err) = reader.read_to_end(&mut buf) {
+                tracing::warn!(target: "shell", ?err, "failed to read child stdout");
+            }
             buf
         });
 
         let stderr_thread = std::thread::spawn(move || {
             let mut reader = stderr_handle;
             let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
+            if let Err(err) = reader.read_to_end(&mut buf) {
+                tracing::warn!(target: "shell", ?err, "failed to read child stderr");
+            }
             buf
         });
 
@@ -843,7 +858,13 @@ impl ShellManager {
             let _ = kill_child_process_group(&mut child);
             #[cfg(not(unix))]
             let _ = child.kill();
-            let status = child.wait().ok();
+            let status = match child.wait() {
+                Ok(s) => Some(s),
+                Err(err) => {
+                    tracing::warn!(target: "shell", ?err, "failed to wait on killed child process");
+                    None
+                }
+            };
             let stdout = stdout_thread.join().unwrap_or_default();
             let stderr = stderr_thread.join().unwrap_or_default();
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
@@ -939,7 +960,13 @@ impl ShellManager {
             let _ = kill_child_process_group(&mut child);
             #[cfg(not(unix))]
             let _ = child.kill();
-            let status = child.wait().ok();
+            let status = match child.wait() {
+                Ok(s) => Some(s),
+                Err(err) => {
+                    tracing::warn!(target: "shell", ?err, "failed to wait on killed child process");
+                    None
+                }
+            };
 
             Ok(ShellResult {
                 task_id: None,
@@ -1360,7 +1387,13 @@ impl ShellManager {
 }
 
 fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
-    let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
+    let data = match buffer.lock() {
+        Ok(d) => d.clone(),
+        Err(poisoned) => {
+            tracing::warn!(target: "shell", "output buffer mutex poisoned; recovering");
+            poisoned.into_inner().clone()
+        }
+    };
     let start = (*cursor).min(data.len());
     let delta = data[start..].to_vec();
     *cursor = data.len();
