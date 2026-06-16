@@ -346,6 +346,70 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize, ellipsis: &str) -> String
     format!("{}{}", &s[..safe_end], ellipsis)
 }
 
+// === Text Truncation & Sanitisation Helpers ===
+
+/// Truncate `text` to at most `max_chars` Unicode scalar values, appending
+/// `"..."` when truncation occurs. Safe for all UTF-8 inputs.
+///
+/// This is the canonical char-count truncation helper for the codebase.
+/// Prefer it over ad-hoc loops that count `.chars()` and append an ellipsis.
+#[must_use]
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let take = max_chars.saturating_sub(3);
+    let mut result: String = text.chars().take(take).collect();
+    result.push_str("...");
+    result
+}
+
+/// Summarize `text` to at most `limit` characters, stripping control
+/// characters (except `\n` and `\t`) and appending `"..."` on overflow.
+///
+/// Use this when rendering user-visible or model-visible summaries of
+/// potentially large / dirty text (shell output, JSON blobs, etc.).
+#[must_use]
+pub fn summarize_text(text: &str, limit: usize) -> String {
+    let take = limit.saturating_sub(3);
+    let mut count = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        if count >= take {
+            out.push_str("...");
+            return out;
+        }
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out
+}
+
+/// Replace characters that are unsafe in filenames with `_`.
+///
+/// Only ASCII alphanumerics, `-`, and `_` are preserved. Returns
+/// `"artifact"` for inputs that produce an empty string.
+#[must_use]
+pub fn sanitize_filename(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "artifact".to_string()
+    } else {
+        out
+    }
+}
+
 /// Percent-encode a string for use in URL query parameters.
 ///
 /// Encodes all characters except unreserved characters (A-Z, a-z, 0-9, `-`, `_`, `.`, `~`).

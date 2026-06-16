@@ -13,6 +13,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+// Inline truncation helper for test-binary compatibility (eval_harness uses
+// `#[path]` include so `crate::utils` is unavailable in that context).
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let take = max_chars.saturating_sub(3);
+    let mut result: String = text.chars().take(take).collect();
+    result.push_str("...");
+    result
+}
 use tempfile::TempDir;
 
 /// Representative tool steps covered by the evaluation harness.
@@ -276,7 +289,7 @@ impl EvalHarness {
 
         match result {
             Ok(value) => {
-                let output = truncate_output(&value.to_string(), self.config.max_output_chars);
+                let output = truncate_chars(&value.to_string(), self.config.max_output_chars);
                 steps.push(EvalStep {
                     kind,
                     tool_name: kind.tool_name(),
@@ -730,13 +743,4 @@ fn exec_shell(root: &Path, command: &str) -> Result<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(stdout.trim().to_string())
-}
-
-fn truncate_output(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-
-    let truncated: String = value.chars().take(max_chars).collect();
-    format!("{}...", truncated)
 }

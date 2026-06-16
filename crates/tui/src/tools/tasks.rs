@@ -19,6 +19,7 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
+use crate::utils::{sanitize_filename, summarize_text};
 
 const MAX_SUMMARY_CHARS: usize = 900;
 const DEFAULT_GATE_TIMEOUT_MS: u64 = 120_000;
@@ -945,37 +946,11 @@ fn classify_gate_failure(
 }
 
 fn summarize(text: &str, limit: usize) -> String {
-    let mut out = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx >= limit.saturating_sub(3) {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-    }
-    if out.trim().is_empty() {
+    let result = summarize_text(text, limit);
+    if result.trim().is_empty() {
         "(no output)".to_string()
     } else {
-        out
-    }
-}
-
-fn sanitize_filename(input: &str) -> String {
-    let mut out = String::new();
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "artifact".to_string()
-    } else {
-        out
+        result
     }
 }
 
